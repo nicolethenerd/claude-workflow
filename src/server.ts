@@ -1,16 +1,20 @@
+import * as path from 'path';
 import { app } from './integrations/slack';
 import * as jira from './integrations/jira';
 import * as slack from './integrations/slack';
+import { loadProjects } from './integrations/jira';
 import { runWorkerAgent } from './agents/worker-agent';
+import { runSlackAgent, resolveReply } from './agents/slack-agent';
+import { config } from './config';
 
-function resumeAgent(taskKey: string): void {
+function resumeJiraAgent(taskKey: string): void {
   jira.getTaskByKey(taskKey)
     .then(task => runWorkerAgent(task))
     .catch(err => console.error(`[${taskKey}] Error resuming agent:`, err));
 }
 
 export function registerSlackHandlers(): void {
-  // ── Plan approval buttons ────────────────────────────────────────────────
+  // ── Plan approval buttons (JIRA tasks) ──────────────────────────────────
 
   app.action('approve_plan', async ({ ack, body }) => {
     await ack();
@@ -24,8 +28,6 @@ export function registerSlackHandlers(): void {
     await jira.addComment(taskKey, '[User] Plan approved. Proceeding with implementation.');
     await jira.clearWaitingForInput(taskKey);
 
-    // Replace the approval buttons with a confirmation so the message
-    // doesn't stay interactive after the decision is made.
     await app.client.chat.update({
       channel: channelId,
       ts: (body as any).message?.ts,
@@ -38,7 +40,7 @@ export function registerSlackHandlers(): void {
       ],
     });
 
-    resumeAgent(taskKey);
+    resumeJiraAgent(taskKey);
   });
 
   app.action('request_changes', async ({ ack, body }) => {
@@ -52,8 +54,6 @@ export function registerSlackHandlers(): void {
 
     console.log(`[Slack] Changes requested for ${taskKey}`);
 
-    // Ask the user to type their feedback in the thread; it will be picked up
-    // by the message handler below and added to JIRA.
     await slack.replyInThread(
       channelId,
       threadTs,
@@ -61,34 +61,56 @@ export function registerSlackHandlers(): void {
     );
   });
 
-  // ── Thread replies ───────────────────────────────────────────────────────
-  // Captures any reply in a thread we're tracking and routes it to JIRA.
+  // ── Messages ─────────────────────────────────────────────────────────────
 
   app.message(async ({ message }) => {
     const msg = message as any;
-
-    // Only care about threaded replies (thread_ts differs from ts)
-    if (!msg.thread_ts || msg.thread_ts === msg.ts) return;
-    // Ignore bot messages
     if (msg.bot_id) return;
 
-    const taskKey = await slack.getTaskKeyForThread(msg.thread_ts);
-    if (!taskKey) return;
+    const isThreadReply = msg.thread_ts && msg.thread_ts !== msg.ts;
 
-    const text = (msg.text as string) ?? '';
-    console.log(`[Slack] Thread reply for ${taskKey}: ${text}`);
+    if (isThreadReply) {
+      // ── Thread reply ────────────────────────────────────────────────────
+      // 1. Check if a Slack-initiated agent is waiting for this reply
+      const text = (msg.text as string) ?? '';
+      if (resolveReply(msg.thread_ts, text)) {
+        console.log(`[Slack] Routed reply to waiting agent (thread: ${msg.thread_ts})`);
+        return;
+      }
 
-    // Add reply as a JIRA comment and unblock the task
-    await jira.addComment(taskKey, `[User] ${text}`);
-    await jira.clearWaitingForInput(taskKey);
+      // 2. Otherwise treat as a reply to a JIRA-tracked thread
+      const taskKey = await slack.getTaskKeyForThread(msg.thread_ts);
+      if (!taskKey) return;
 
-    await app.client.chat.postMessage({
-      channel: msg.channel,
-      thread_ts: msg.thread_ts,
-      text: `Got it. Resuming *${taskKey}* now.`,
-    });
+      console.log(`[Slack] Thread reply for ${taskKey}: ${text}`);
 
-    resumeAgent(taskKey);
+      await jira.addComment(taskKey, `[User] ${text}`);
+      await jira.clearWaitingForInput(taskKey);
+
+      await app.client.chat.postMessage({
+        channel: msg.channel,
+        thread_ts: msg.thread_ts,
+        text: `Got it. Resuming *${taskKey}* now.`,
+      });
+
+      resumeJiraAgent(taskKey);
+    } else {
+      // ── Top-level message in a project channel → start a Slack agent ───
+      const projects = await loadProjects().catch(() => []);
+      const project = projects.find(p => p.slackChannel === msg.channel);
+      if (!project) return;
+
+      const text = (msg.text as string) ?? '';
+      if (!text.trim()) return;
+
+      console.log(`[Slack] New task in #${project.key}: ${text}`);
+
+      const repoName = project.repo.split('/')[1];
+      const workspaceDir = path.join(config.workspace.dir, repoName);
+
+      runSlackAgent(msg.channel, msg.ts, project.repo, workspaceDir, text)
+        .catch(err => console.error(`[SlackAgent] Error:`, err));
+    }
   });
 }
 

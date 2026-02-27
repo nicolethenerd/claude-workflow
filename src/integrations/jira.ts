@@ -6,7 +6,7 @@ import type { JiraTask, JiraComment, ProjectConfig } from '../types';
 
 const PROJECTS_FILE = path.join(process.cwd(), 'projects.json');
 
-async function loadProjects(): Promise<ProjectConfig[]> {
+export async function loadProjects(): Promise<ProjectConfig[]> {
   const raw = await fs.readFile(PROJECTS_FILE, 'utf-8');
   const projects: ProjectConfig[] = JSON.parse(raw);
   if (!Array.isArray(projects) || projects.length === 0) {
