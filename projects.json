@@ -1,0 +1,10 @@
+[
+  { "key": "AI",   "repo": "nicolethenerd/claude-workflow",   "slackChannel": "C0AJ1M34FR7" },
+  { "key": "CAL",  "repo": "nicolethenerd/cal-app",  "slackChannel": "C0AHKB6QKJR" },
+  { "key": "SHOP", "repo": "nicolethenerd/shop-app", "slackChannel": "C0AHSBYP7C4" },
+  { "key": "KIOSK","repo": "nicolethenerd/kiosk","slackChannel": "C0AHNLJ8NGJ" },
+  { "key": "MEAL", "repo": "nicolethenerd/meal-app", "slackChannel": "C0AJ1M88801" },
+  { "key": "MISC", "repo": "nicolethenerd/misc-app", "slackChannel": "C0AJ1M88801" },
+  { "key": "ROO",  "repo": "nicolethenerd/roo-app",  "slackChannel": "C0AHGC35Y5R" },
+  { "key": "PLAY", "repo": "nicolethenerd/play-app", "slackChannel": "C0AHGC35Y5R" }
+]
