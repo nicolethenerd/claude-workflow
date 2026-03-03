@@ -61,6 +61,29 @@ export function registerSlackHandlers(): void {
     );
   });
 
+  // ── /task slash command ──────────────────────────────────────────────────
+
+  app.command('/task', async ({ command, ack, respond }) => {
+    await ack();
+
+    const summary = command.text.trim();
+    if (!summary) {
+      await respond('Usage: `/task <description>`');
+      return;
+    }
+
+    const projects = await loadProjects().catch(() => []);
+    const project = projects.find(p => p.slackChannel === command.channel_id);
+
+    if (!project) {
+      await respond('This channel is not linked to a JIRA project. Add it to `projects.json`.');
+      return;
+    }
+
+    const { key } = await jira.createTask(project.key, summary);
+    await respond(`Created *${key}*: ${summary}\nLabelled \`${config.jira.agentLabel}\` — the agent will pick it up on the next cycle.`);
+  });
+
   // ── Messages ─────────────────────────────────────────────────────────────
 
   app.message(async ({ message }) => {

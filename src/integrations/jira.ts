@@ -60,6 +60,18 @@ export async function getTaskByKey(key: string): Promise<JiraTask> {
   return parseIssue(issue, configByKey);
 }
 
+export async function createTask(projectKey: string, summary: string): Promise<{ key: string }> {
+  const issue = await client.issues.createIssue({
+    fields: {
+      project: { key: projectKey },
+      summary,
+      issuetype: { name: 'Task' },
+      labels: [config.jira.agentLabel],
+    },
+  });
+  return { key: issue.key ?? '' };
+}
+
 export async function setInProgress(taskKey: string): Promise<void> {
   await transitionTo(taskKey, 'In Progress');
 }
