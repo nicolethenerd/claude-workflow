@@ -1,0 +1,13 @@
+services:
+  workflow:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./projects.json:/app/projects.json:ro
+      - workspaces:/workspaces
+    environment:
+      - WORKSPACE_DIR=/workspaces
+
+volumes:
+  workspaces:
