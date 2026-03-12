@@ -8,6 +8,11 @@ import { runWorkerAgent } from '../agents/worker-agent';
 const inFlight = new Set<string>();
 
 export function startWorkerCron(): void {
+  if (!config.claude.enabled) {
+    console.log('[Scheduler] Claude agent disabled — worker cron not started.');
+    return;
+  }
+
   console.log(
     `[Scheduler] Worker cron starting. Schedule: ${config.scheduler.workerCronSchedule} (${config.scheduler.timezone})`,
   );
