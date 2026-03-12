@@ -16,7 +16,11 @@ function resumeJiraAgent(taskKey: string): void {
 export function registerSlackHandlers(): void {
   // ── Plan approval buttons (JIRA tasks) ──────────────────────────────────
 
-  app.action('approve_plan', async ({ ack, body }) => {
+  if (!config.claude.enabled) {
+    console.log('[Slack] Claude agent disabled — skipping agent handlers (/work, approve_plan, request_changes, messages)');
+  }
+
+  if (config.claude.enabled) app.action('approve_plan', async ({ ack, body }) => {
     await ack();
 
     const taskKey = (body as any).actions?.[0]?.value as string;
@@ -43,7 +47,7 @@ export function registerSlackHandlers(): void {
     resumeJiraAgent(taskKey);
   });
 
-  app.action('request_changes', async ({ ack, body }) => {
+  if (config.claude.enabled) app.action('request_changes', async ({ ack, body }) => {
     await ack();
 
     const taskKey = (body as any).actions?.[0]?.value as string;
@@ -80,13 +84,69 @@ export function registerSlackHandlers(): void {
       return;
     }
 
-    const { key } = await jira.createTask(project.key, summary);
-    await respond(`Created *${key}*: ${summary}\nLabelled \`${config.jira.agentLabel}\` — the agent will pick it up on the next cycle.`);
+    const labels = config.claude.enabled ? [config.jira.agentLabel] : [];
+    const { key } = await jira.createTask(project.key, summary, labels);
+    const agentNote = config.claude.enabled ? `\nLabelled \`${config.jira.agentLabel}\` — the agent will pick it up on the next cycle.` : '';
+    await respond(`Created *${key}*: ${summary}${agentNote}`);
+  });
+
+  // ── /work slash command ──────────────────────────────────────────────────
+
+  if (config.claude.enabled) app.command('/work', async ({ command, ack, respond }) => {
+    await ack();
+
+    const ticketKey = command.text.trim().toUpperCase();
+    if (!ticketKey || !/^[A-Z]+-\d+$/.test(ticketKey)) {
+      await respond('Usage: `/work <TICKET-KEY>` — e.g. `/work KIOSK-7`');
+      return;
+    }
+
+    const projects = await loadProjects().catch(() => []);
+    const project = projects.find(p => p.slackChannel === command.channel_id);
+    if (!project) {
+      await respond('This channel is not linked to a project. Add it to `projects.json`.');
+      return;
+    }
+
+    let task: Awaited<ReturnType<typeof jira.getTaskByKey>>;
+    try {
+      task = await jira.getTaskByKey(ticketKey);
+    } catch {
+      await respond(`Could not fetch *${ticketKey}*. Make sure it exists and is accessible.`);
+      return;
+    }
+
+    // Post a message to anchor the thread, then start the agent inside it
+    const result = await app.client.chat.postMessage({
+      channel: command.channel_id,
+      text: `Starting work on *${ticketKey}*: ${task.summary}`,
+    });
+    const threadTs = result.ts!;
+
+    const repoName = project.repo.split('/')[1];
+    const workspaceDir = path.join(config.workspace.dir, repoName);
+
+    const historyText =
+      task.comments.length > 0
+        ? '\n\nTicket comments:\n' +
+          task.comments.map(c => `[${c.created}] ${c.author}:\n${c.body}`).join('\n\n---\n\n')
+        : '';
+
+    const userMessage =
+      `Jira ticket ${task.key}: ${task.summary}\n\n` +
+      `Status: ${task.status}\n\n` +
+      `Description:\n${task.description}` +
+      historyText;
+
+    console.log(`[Slack] /work ${ticketKey} → thread ${threadTs}`);
+
+    runSlackAgent(command.channel_id, threadTs, project.repo, workspaceDir, userMessage)
+      .catch(err => console.error(`[SlackAgent:${ticketKey}] Error:`, err));
   });
 
   // ── Messages ─────────────────────────────────────────────────────────────
 
-  app.message(async ({ message }) => {
+  if (config.claude.enabled) app.message(async ({ message }) => {
     const msg = message as any;
     if (msg.bot_id) return;
 

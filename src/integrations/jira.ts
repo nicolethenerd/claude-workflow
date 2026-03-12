@@ -36,8 +36,7 @@ export async function getReadyAgentTasks(): Promise<JiraTask[]> {
 
   const jql = [
     `project in (${projectList})`,
-    `status in ("To Do", "In Progress")`,
-    `labels = "${config.jira.agentLabel}"`,
+    `status = "READY FOR CLAUDE"`,
     `labels != "${config.jira.blockedLabel}"`,
   ].join(' AND ') + ' ORDER BY priority DESC';
 
@@ -60,13 +59,13 @@ export async function getTaskByKey(key: string): Promise<JiraTask> {
   return parseIssue(issue, configByKey);
 }
 
-export async function createTask(projectKey: string, summary: string): Promise<{ key: string }> {
+export async function createTask(projectKey: string, summary: string, labels: string[] = [config.jira.agentLabel]): Promise<{ key: string }> {
   const issue = await client.issues.createIssue({
     fields: {
       project: { key: projectKey },
       summary,
       issuetype: { name: 'Task' },
-      labels: [config.jira.agentLabel],
+      labels,
     },
   });
   return { key: issue.key ?? '' };

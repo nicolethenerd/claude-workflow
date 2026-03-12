@@ -8,10 +8,6 @@ function requireEnv(name: string): string {
 }
 
 export const config = {
-  anthropic: {
-    apiKey: requireEnv('ANTHROPIC_API_KEY'),
-    model: process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6',
-  },
   jira: {
     host: requireEnv('JIRA_HOST'),
     email: requireEnv('JIRA_EMAIL'),
@@ -32,5 +28,8 @@ export const config = {
   },
   workspace: {
     dir: process.env.WORKSPACE_DIR ?? `${process.env.HOME}/claude-workflow-workspaces`,
+  },
+  claude: {
+    enabled: (process.env.CLAUDE_ENABLED ?? 'true') !== 'false',
   },
 };

@@ -1,27 +1,123 @@
-import Anthropic from '@anthropic-ai/sdk';
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { config } from '../config';
 import * as jira from '../integrations/jira';
-import { TOOL_DEFINITIONS, executeTool } from './tools';
-import type { JiraTask, AgentContext } from '../types';
+import * as slack from '../integrations/slack';
+import {
+  buildBranchName,
+  commitAndPush,
+  createBranch,
+  createPullRequest,
+  prepareRepo,
+} from '../integrations/github';
+import { runClaude, extractAction } from './claude-cli';
+import type { JiraTask, JiraComment } from '../types';
 
-const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
-
-// Entry point called by the cron scheduler.
-// The agent reads task history from JIRA comments, runs the agentic loop,
-// and exits when the task is complete, paused for human input, or paused for plan approval.
+// Entry point called by the cron scheduler and server.ts on plan approval / human reply.
+// Finds the existing claude session (if any) from Jira comments and resumes it,
+// or starts a fresh session for a first run.
 export async function runWorkerAgent(task: JiraTask): Promise<void> {
   console.log(`[${task.key}] Starting agent: ${task.summary}`);
 
-  // Work inside the existing local repo (WORKSPACE_DIR/repo-name)
   const repoName = task.repository?.split('/')[1] ?? task.key;
   const workspaceDir = path.join(config.workspace.dir, repoName);
 
-  const context: AgentContext = { task, workspaceDir };
+  const sessionId = extractSessionId(task.comments);
+  const isFirstRun = !sessionId;
 
-  // Reconstruct history from JIRA comments so the agent has full context
-  // whether this is its first run or a resumption after a human reply
+  let prompt: string;
+
+  if (isFirstRun) {
+    await prepareRepo(workspaceDir);
+    const branchName = buildBranchName(task.key, task.summary);
+    await createBranch(workspaceDir, branchName);
+    prompt = buildInitialPrompt(task, workspaceDir, branchName);
+  } else {
+    const lastUserReply = extractLastUserReply(task.comments);
+    prompt = lastUserReply ?? 'Continue.';
+  }
+
+  console.log(`[${task.key}] Running claude (isFirstRun=${isFirstRun}, sessionId=${sessionId ?? 'none'})`);
+
+  const { response, sessionId: newSessionId } = await runClaude(prompt, {
+    cwd: workspaceDir,
+    sessionId: sessionId ?? undefined,
+  });
+
+  const action = extractAction(response);
+  if (!action?.action) {
+    console.log(`[${task.key}] No action found in response; agent may have finished silently`);
+    return;
+  }
+
+  console.log(`[${task.key}] Action: ${action.action}`);
+
+  switch (action.action) {
+    case 'propose_plan': {
+      await jira.addComment(
+        task.key,
+        `[Agent] session_id: ${newSessionId}\nProposed plan:\n${action.plan}`,
+      );
+      await jira.setWaitingForInput(task.key);
+      await slack.postPlanForApproval(task.slackChannel ?? '', task.key, task.summary, action.plan);
+      break;
+    }
+
+    case 'ask_human': {
+      await jira.addComment(
+        task.key,
+        `[Agent] session_id: ${newSessionId}\nNeeds input: ${action.question}`,
+      );
+      await jira.setWaitingForInput(task.key);
+      await slack.postQuestion(task.slackChannel ?? '', task.key, action.question);
+      break;
+    }
+
+    case 'mark_complete': {
+      if (action.pr_title && task.repository) {
+        const branchName = buildBranchName(task.key, task.summary);
+        await commitAndPush(workspaceDir, `${task.key}: ${action.pr_title}`, task.repository);
+        const prUrl = await createPullRequest(
+          task.repository,
+          action.pr_title,
+          action.pr_body ?? '',
+          branchName,
+        );
+        await jira.addComment(task.key, `[Agent] PR created: ${prUrl}`);
+        await jira.setDone(task.key);
+        await slack.postComplete(task.slackChannel ?? '', task.key, action.summary, prUrl);
+      } else {
+        await jira.setDone(task.key);
+        await slack.postComplete(task.slackChannel ?? '', task.key, action.summary);
+      }
+      break;
+    }
+
+    default:
+      console.log(`[${task.key}] Unhandled action: ${action.action}`);
+  }
+}
+
+// Scan comments newest-first for the last "[Agent] session_id: <id>" line.
+function extractSessionId(comments: JiraComment[]): string | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const match = comments[i].body.match(/\[Agent\] session_id: (\S+)/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// Find the most recent [User] comment to use as the resume prompt.
+function extractLastUserReply(comments: JiraComment[]): string | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const body = comments[i].body;
+    if (body.startsWith('[User] ')) {
+      return body.slice('[User] '.length);
+    }
+  }
+  return null;
+}
+
+function buildInitialPrompt(task: JiraTask, workspaceDir: string, branchName: string): string {
   const historyText =
     task.comments.length > 0
       ? '\n\nWork history for this task:\n' +
@@ -30,101 +126,35 @@ export async function runWorkerAgent(task: JiraTask): Promise<void> {
           .join('\n\n---\n\n')
       : '';
 
-  const messages: Anthropic.MessageParam[] = [
-    {
-      role: 'user',
-      content:
-        `Work on the following JIRA task:\n\n` +
-        `**${task.key}: ${task.summary}**\n\n` +
-        `${task.description}` +
-        historyText +
-        `\n\n` +
-        `Start by reviewing the task and any prior history above. ` +
-        `If this is your first time working on it, call \`propose_plan\` with a detailed plan before touching any code. ` +
-        `If you see "[User] Plan approved" in the history, proceed directly with implementation. ` +
-        `If you see a human reply to a previous question, continue from where you left off.`,
-    },
-  ];
-
-  // Agentic loop
-  while (true) {
-    const response = await anthropic.messages.create({
-      model: config.anthropic.model,
-      max_tokens: 8096,
-      system: buildSystemPrompt(task),
-      messages,
-      tools: TOOL_DEFINITIONS,
-    });
-
-    // Add assistant turn to history
-    messages.push({ role: 'assistant', content: response.content });
-
-    if (response.stop_reason === 'end_turn') {
-      // Claude stopped without calling mark_complete — log and exit
-      console.log(`[${task.key}] Agent reached end_turn without explicit completion`);
-      break;
-    }
-
-    if (response.stop_reason === 'tool_use') {
-      const toolUseBlocks = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
-      );
-
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      let shouldStop = false;
-
-      for (const toolUse of toolUseBlocks) {
-        console.log(`[${task.key}] Tool: ${toolUse.name}`);
-
-        try {
-          const { result, shouldStop: stop } = await executeTool(
-            toolUse.name,
-            toolUse.input as Record<string, any>,
-            context,
-          );
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: result,
-          });
-
-          if (stop) shouldStop = true;
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[${task.key}] Tool error (${toolUse.name}): ${errorMsg}`);
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: `Error: ${errorMsg}`,
-            is_error: true,
-          });
-        }
-      }
-
-      messages.push({ role: 'user', content: toolResults });
-
-      if (shouldStop) {
-        console.log(`[${task.key}] Agent paused (waiting for human or task complete)`);
-        break;
-      }
-    }
-  }
-}
-
-function buildSystemPrompt(task: JiraTask): string {
   return `\
-You are an autonomous software development agent working on JIRA tasks.
+You are an autonomous software development agent.
+Workspace: ${workspaceDir} (already checked out on branch ${branchName})
 
-Current task: ${task.key}
-Workspace: An isolated directory where you can read/write files and run shell commands.
+Use your built-in tools (Bash, Read, Write, Edit, Glob, Grep) to read files, run shell commands, write code, and run tests.
+
+IMPORTANT: Do NOT use any MCP tools, Atlassian, Jira, Slack, or GitHub integrations.
+The orchestration layer handles all external service communication — your only job is to write code in the workspace.
+Do NOT try to look up Jira issues, post to Slack, or create PRs yourself.
+
+When you need to communicate or pause, end your response with a JSON block:
+\`\`\`json
+{"action": "propose_plan", "plan": "step-by-step plan here"}
+\`\`\`
+
+Other valid actions:
+\`\`\`json
+{"action": "ask_human", "question": "your question here"}
+\`\`\`
+\`\`\`json
+{"action": "mark_complete", "summary": "what was done", "pr_title": "PR title", "pr_body": "PR description"}
+\`\`\`
 
 Rules:
-1. Always call \`propose_plan\` before writing any code (unless the history shows the plan was already approved).
-2. Call \`prepare_repo\` before making code changes so the repo is cloned and a branch is created.
-3. After writing code, run the test suite and fix failures before opening a PR.
-4. Use \`ask_human\` sparingly — only when genuinely blocked. Prefer figuring things out yourself.
-5. When the implementation is complete and tests pass, call \`create_pull_request\` then \`mark_complete\`.
-6. Be concise in your reasoning; be thorough in your code.`;
+1. Always output propose_plan before writing any code (unless history shows the plan was already approved).
+2. After writing code, run the test suite and fix any failures.
+3. Use ask_human sparingly — only when genuinely blocked.
+4. When implementation is complete and tests pass, output mark_complete with pr_title and pr_body.
+
+Task: ${task.key}: ${task.summary}
+${task.description}${historyText}`;
 }

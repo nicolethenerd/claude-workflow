@@ -11,24 +11,24 @@ async function main(): Promise<void> {
   registerSlackHandlers();
   await startSlackApp();
 
-  console.log('[Trigger] Polling JIRA for ready tasks...');
+  // console.log('[Trigger] Polling JIRA for ready tasks...');
 
-  const tasks = await getReadyAgentTasks();
+  // const tasks = await getReadyAgentTasks();
 
-  if (tasks.length === 0) {
-    console.log(`[Trigger] No ready tasks found. Make sure a task has the "${config.jira.agentLabel}" label and status "To Do".`);
-    return;
-  }
+  // if (tasks.length === 0) {
+  //   console.log(`[Trigger] No ready tasks found. Make sure a task has the "${config.jira.agentLabel}" label and status "To Do".`);
+  //   return;
+  // }
 
-  console.log(`[Trigger] Found ${tasks.length} task(s): ${tasks.map(t => t.key).join(', ')}`);
+  // console.log(`[Trigger] Found ${tasks.length} task(s): ${tasks.map(t => t.key).join(', ')}`);
 
-  for (const task of tasks) {
-    console.log(`[Trigger] Starting agent for ${task.key}: ${task.summary}`);
-    await setInProgress(task.key);
-    await runWorkerAgent(task);
-  }
+  // for (const task of tasks) {
+  //   console.log(`[Trigger] Starting agent for ${task.key}: ${task.summary}`);
+  //   await setInProgress(task.key);
+  //   await runWorkerAgent(task);
+  // }
 
-  console.log('[Trigger] Done. Keeping Slack connection open to handle button clicks and replies. Ctrl+C to exit.');
+  // console.log('[Trigger] Done. Keeping Slack connection open to handle button clicks and replies. Ctrl+C to exit.');
   // Process stays alive so the Slack socket can receive interactions
 }
 

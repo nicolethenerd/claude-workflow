@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest';
-import { simpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import { config } from '../config';
 
 const octokit = new Octokit({ auth: config.github.token });
@@ -16,7 +16,22 @@ export async function prepareRepo(workspaceDir: string): Promise<void> {
       `Check that WORKSPACE_DIR in .env points to your local development folder.`,
     );
   }
-  await git.pull();
+  // Fetch first so origin/HEAD is current, then switch to the default branch
+  // before pulling. This avoids "no tracking information" errors when the repo
+  // is sitting on a leftover agent branch from a previous run.
+  await git.fetch('origin');
+  const defaultBranch = await getDefaultBranch(git);
+  await git.checkout(defaultBranch);
+  await git.pull('origin', defaultBranch);
+}
+
+async function getDefaultBranch(git: SimpleGit): Promise<string> {
+  try {
+    const ref = await git.revparse(['--abbrev-ref', 'origin/HEAD']);
+    return ref.trim().replace('origin/', '');
+  } catch {
+    return 'main';
+  }
 }
 
 export async function createBranch(workspaceDir: string, branchName: string): Promise<void> {
