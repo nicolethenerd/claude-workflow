@@ -7,5 +7,6 @@
   { "key": "MISC", "repo": "nicolethenerd/misc-app", "slackChannel": "C0AJ1M88801" },
   { "key": "ROO",  "repo": "nicolethenerd/roo-app",  "slackChannel": "C0AHGC35Y5R" },
   { "key": "PLAY", "repo": "nicolethenerd/play-app", "slackChannel": "C0AHGC35Y5R" },
-  { "key": "COMEDY", "repo": "nicolethenerd/comedy-bot", "slackChannel": "C0ALW0BP5F0" }
+  { "key": "COMEDY", "repo": "nicolethenerd/comedy-bot", "slackChannel": "C0ALW0BP5F0" },
+  { "key": "TEACH", "repo": "nicolethenerd/claude-curriculum", "slackChannel": "C0ALTR6DKEC" }
 ]
